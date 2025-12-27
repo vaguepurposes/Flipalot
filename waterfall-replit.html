@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Retro Radio Station</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --accent-color: #00ff88;
+            --panel-color: #1e1e1e;
+            --text-color: #e0e0e0;
+        }
+
+        body {
+            margin: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #visualizer-container {
+            width: 100%;
+            height: 35vh; /* Немного увеличил для красоты */
+            background: #000;
+            position: relative;
+            border-bottom: 1px solid #333;
+            overflow: hidden;
+        }
+
+        #waterfall {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .info-panel {
+            padding: 15px;
+            text-align: center;
+        }
+
+        .track-info {
+            font-size: 1.1rem;
+            margin-top: 5px;
+            color: var(--accent-color);
+            height: 1.5em;
+            font-family: 'Courier New', monospace;
+        }
+
+        .stations-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            padding: 15px;
+            flex-grow: 1;
+        }
+
+        .station-btn {
+            background: var(--panel-color);
+            border: 2px solid #333;
+            border-radius: 12px;
+            color: white;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .station-btn.active {
+            border-color: var(--accent-color);
+            box-shadow: 0 0 15px rgba(0, 255, 136, 0.2);
+            background: #252525;
+        }
+
+        .station-btn b { display: block; margin-bottom: 5px; }
+        .station-btn span { font-size: 0.75rem; opacity: 0.5; }
+
+        .bottom-controls {
+            padding: 15px;
+            background: var(--panel-color);
+            border-top: 1px solid #333;
+        }
+
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.7rem;
+            margin-bottom: 8px;
+            color: #888;
+            font-family: monospace;
+        }
+
+        .progress-container {
+            width: 100%;
+            height: 4px;
+            background: #333;
+            border-radius: 2px;
+        }
+
+        #progress-bar {
+            width: 0%;
+            height: 100%;
+            background: var(--accent-color);
+            box-shadow: 0 0 10px var(--accent-color);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="visualizer-container">
+        <canvas id="waterfall"></canvas>
+    </div>
+
+    <div class="info-panel">
+        <div id="current-station-name">СИСТЕМА ГОТОВА</div>
+        <div id="track-title" class="track-info">ВЫБЕРИТЕ ВОЛНУ</div>
+    </div>
+
+    <div class="stations-grid">
+        <button class="station-btn" onclick="switchStation(0)">
+            <b>Radio New Vegas</b>
+            <span>Fallout OST</span>
+        </button>
+        <button class="station-btn" onclick="switchStation(1)">
+            <b>Vice City & IV</b>
+            <span>GTA Classics</span>
+        </button>
+        <button class="station-btn" onclick="switchStation(2)">
+            <b>AI Covers</b>
+            <span>2000s Hits</span>
+        </button>
+        <button class="station-btn" onclick="switchStation(3)">
+            <b>The Mixer</b>
+            <span>All Stations</span>
+        </button>
+    </div>
+
+    <div class="bottom-controls">
+        <div class="status-bar">
+            <span id="cache-status">SIGNAL: STABLE</span>
+            <span id="time-left">00:00</span>
+        </div>
+        <div class="progress-container">
+            <div id="progress-bar"></div>
+        </div>
+    </div>
+
+    <script>
+        const playlists = [
+            ["https://dl.dropboxusercontent.com/scl/fi/ckua9wrkqdn7uozkuzfkt/50_Cent_-_In_Da_Club_-1960-s_Motown_Soul_AI_Cover.mp3?rlkey=7oosezoeunikrhqi5rpkzyhvl"],
+            ["https://dl.dropboxusercontent.com/scl/fi/huoth3v4n3j9wfrlnt7dp/Enoue-Look-Alive-EXE0sSn7V-Q.mp3?rlkey=pg06s7s2q6120t49gut1uz49v&st=bnusp1wf"],
+            ["https://dl.dropboxusercontent.com/scl/fi/rggz5x6on62ha9iuvr4xb/50_Cent_-_Many_Men_-1960-s_Motown_Soul_AI_Cover-_.mp3?rlkey=9u6ulzizbt432b83m2am3nqkv"],
+            []
+        ];
+
+        let currentStation = null;
+        let currentTrackIndex = 0;
+        let isPreloading = false;
+        
+        // Аудио движок
+        let audio = new Audio();
+        audio.crossOrigin = "anonymous"; 
+        
+        let audioCtx, analyser, source;
+        let history = [];
+        const maxHistory = 40;
+
+        playlists[3] = [...playlists[0], ...playlists[1], ...playlists[2]];
+
+        function initAudio() {
+            if (audioCtx) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256;
+            
+            source = audioCtx.createMediaElementSource(audio);
+            source.connect(analyser);
+            analyser.connect(audioCtx.destination);
+            
+            drawWaterfall(); // Запускаем цикл отрисовки
+        }
+
+        function switchStation(index) {
+            initAudio(); // Инициализация при первом клике
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+
+            const buttons = document.querySelectorAll('.station-btn');
+            
+            if (currentStation === index) {
+                if (audio.paused) audio.play();
+                else audio.pause();
+                return;
+            }
+
+            buttons.forEach((btn, i) => btn.classList.toggle('active', i === index));
+            currentStation = index;
+            currentTrackIndex = 0;
+            playTrack();
+            
+            document.getElementById('current-station-name').innerText = buttons[index].querySelector('b').innerText;
+        }
+
+        function playTrack() {
+            const trackUrl = playlists[currentStation][currentTrackIndex];
+            audio.src = trackUrl;
+            audio.play().catch(e => console.log("Ожидание взаимодействия..."));
+            document.getElementById('track-title').innerText = `BROADCASTING... VOL.${currentStation + 1}`;
+        }
+
+        // --- ВИЗУАЛИЗАЦИЯ (WATERFALL) ---
+        const canvas = document.getElementById('waterfall');
+        const ctx = canvas.getContext('2d');
+
+        function drawWaterfall() {
+            requestAnimationFrame(drawWaterfall);
+            
+            // Подстройка размера под экран
+            if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+                canvas.width = canvas.clientWidth;
+                canvas.height = canvas.clientHeight;
+            }
+
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            analyser.getByteFrequencyData(dataArray);
+
+            // Сохраняем историю
+            history.unshift(new Uint8Array(dataArray));
+            if (history.length > maxHistory) history.pop();
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Отрисовка линий сзади наперед
+            for (let i = history.length - 1; i >= 0; i--) {
+                const row = history[i];
+                const ratio = 1 - (i / maxHistory);
+                
+                // Эффект перспективы
+                const yBase = (canvas.height * 0.8) - (i * 4);
+                const scale = 0.5 + (ratio * 0.5);
+                const rowWidth = canvas.width * scale;
+                const xOffset = (canvas.width - rowWidth) / 2;
+
+                ctx.beginPath();
+                ctx.strokeStyle = `rgba(0, 255, 136, ${Math.pow(ratio, 2) * 0.8})`;
+                ctx.lineWidth = 1.2;
+
+                const activeFreqs = Math.floor(bufferLength * 0.7); 
+                for (let j = 0; j < activeFreqs; j++) {
+                    const val = (row[j] / 255) * 60 * ratio;
+                    const x = xOffset + (j * (rowWidth / activeFreqs));
+                    const y = yBase - val;
+
+                    if (j === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                }
+                ctx.stroke();
+            }
+        }
+
+        // Прогресс бар
+        audio.addEventListener('timeupdate', () => {
+            if (audio.duration) {
+                const progress = (audio.currentTime / audio.duration) * 100;
+                document.getElementById('progress-bar').style.width = progress + '%';
+                
+                const mins = Math.floor(audio.currentTime / 60);
+                const secs = Math.floor(audio.currentTime % 60).toString().padStart(2, '0');
+                document.getElementById('time-left').innerText = `${mins}:${secs}`;
+            }
+        });
+
+        audio.addEventListener('ended', () => {
+            currentTrackIndex = (currentTrackIndex + 1) % playlists[currentStation].length;
+            playTrack();
+        });
+    </script>
+</body>
+</html>
